@@ -510,30 +510,29 @@ int main() {
 
         renderScene(shader);
 
-        // --- 4. Light cubes ---
+        // --- 4. Light spheres ---
         shaderLightCube.use();
         shaderLightCube.setMat4("projection", projection);
         shaderLightCube.setMat4("view", view);
 
-        glBindVertexArray(cubeVAO);
-
-        // Sun cube — scale with orbit radius
+        // Sun sphere
         float sunCubeScale = sunOrbitRadius * 0.05f;
         glm::mat4 model = glm::mat4(1.0f);
         model = glm::translate(model, sunPos);
         model = glm::scale(model, glm::vec3(sunCubeScale));
         shaderLightCube.setMat4("model", model);
         shaderLightCube.setVec3("lightColor", sunCubeColor);
-        glDrawArrays(GL_TRIANGLES, 0, 36);
+        glBindVertexArray(sphereVAO);
+        glDrawElements(GL_TRIANGLES, sphereIndexCount, GL_UNSIGNED_INT, 0);
 
-        // Moon cube — scale with orbit radius
+        // Moon sphere
         float moonCubeScale = moonOrbitRadius * 0.05f;
         model = glm::mat4(1.0f);
         model = glm::translate(model, moonPos);
         model = glm::scale(model, glm::vec3(moonCubeScale));
         shaderLightCube.setMat4("model", model);
         shaderLightCube.setVec3("lightColor", moonCubeColor);
-        glDrawArrays(GL_TRIANGLES, 0, 36);
+        glDrawElements(GL_TRIANGLES, sphereIndexCount, GL_UNSIGNED_INT, 0);
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
