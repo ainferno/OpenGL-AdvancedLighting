@@ -34,6 +34,18 @@ bool firstMouse = true;
 float deltaTime = 0.0f;
 float lastFrame = 0.0f;
 
+bool bloom = true;
+bool bloomKeyPressed = false;
+float exposure = 1.0f;
+
+// --- Bloom FBO globals ---
+unsigned int hdrFBO = 0;
+unsigned int colorBuffers[2] = {0, 0};
+unsigned int rboDepth = 0;
+unsigned int pingpongFBO[2] = {0, 0};
+unsigned int pingpongBuffers[2] = {0, 0};
+unsigned int quadVAO = 0, quadVBO;
+
 // --- Geometry globals ---
 unsigned int planeVAO, planeVBO;
 unsigned int cubeVAO, cubeVBO;
@@ -244,6 +256,84 @@ unsigned int createDepthMapFBO(unsigned int width, unsigned int height, unsigned
     return fbo;
 }
 
+void createBloomFramebuffers() {
+    if (hdrFBO) {
+        glDeleteFramebuffers(1, &hdrFBO);
+        glDeleteTextures(2, colorBuffers);
+        glDeleteRenderbuffers(1, &rboDepth);
+        glDeleteFramebuffers(2, pingpongFBO);
+        glDeleteTextures(2, pingpongBuffers);
+    }
+
+    glGenFramebuffers(1, &hdrFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO);
+
+    glGenTextures(2, colorBuffers);
+    for (unsigned int i = 0; i < 2; ++i) {
+        glBindTexture(GL_TEXTURE_2D, colorBuffers[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, colorBuffers[i], 0);
+    }
+
+    glGenRenderbuffers(1, &rboDepth);
+    glBindRenderbuffer(GL_RENDERBUFFER, rboDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, SCR_WIDTH, SCR_HEIGHT);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rboDepth);
+
+    unsigned int attachments[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+    glDrawBuffers(2, attachments);
+
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        std::cerr << "HDR framebuffer not complete!" << std::endl;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    glGenFramebuffers(2, pingpongFBO);
+    glGenTextures(2, pingpongBuffers);
+    for (unsigned int i = 0; i < 2; ++i) {
+        glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[i]);
+        glBindTexture(GL_TEXTURE_2D, pingpongBuffers[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pingpongBuffers[i], 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            std::cerr << "Ping-pong framebuffer " << i << " not complete!" << std::endl;
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void renderQuad() {
+    if (quadVAO == 0) {
+        float quadVertices[] = {
+            -1.0f,  1.0f, 0.0f,  0.0f, 1.0f,
+            -1.0f, -1.0f, 0.0f,  0.0f, 0.0f,
+             1.0f,  1.0f, 0.0f,  1.0f, 1.0f,
+             1.0f, -1.0f, 0.0f,  1.0f, 0.0f,
+        };
+        glGenVertexArrays(1, &quadVAO);
+        glGenBuffers(1, &quadVBO);
+        glBindVertexArray(quadVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+        glBindVertexArray(0);
+    }
+    glBindVertexArray(quadVAO);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+}
+
 int main() {
     GLFWwindow* window = init_gl_window("Moving light — Sun & Moon");
     if (!window) { return -1; }
@@ -251,6 +341,8 @@ int main() {
     Shader shader("4.1.moving_light/1.advanced_lighting.vs", "4.1.moving_light/1.advanced_lighting.fs");
     Shader shaderShadow("4.1.moving_light/shadow.vs", "4.1.moving_light/shadow.fs");
     Shader shaderLightCube("4.1.moving_light/light_cube.vs", "4.1.moving_light/light_cube.fs");
+    Shader shaderBlur("4.1.moving_light/blur.vs", "4.1.moving_light/blur.fs");
+    Shader shaderFinal("4.1.moving_light/bloom_final.vs", "4.1.moving_light/bloom_final.fs");
 
     initPlane();
     initCube();
@@ -270,11 +362,19 @@ int main() {
     shader.setInt("shadowMap1", 1);
     shader.setInt("shadowMap2", 2);
 
+    shaderBlur.use();
+    shaderBlur.setInt("image", 0);
+    shaderFinal.use();
+    shaderFinal.setInt("scene", 0);
+    shaderFinal.setInt("bloomBlur", 1);
+
+    createBloomFramebuffers();
+
     // --- Light colors ---
     glm::vec3 sunColor(1.0f, 0.9f, 0.7f);
     glm::vec3 moonColor(0.4f, 0.5f, 0.7f);
-    glm::vec3 sunCubeColor(1.0f, 0.85f, 0.5f);
-    glm::vec3 moonCubeColor(0.6f, 0.7f, 1.0f);
+    glm::vec3 sunCubeColor(5.0f, 4.25f, 2.5f);
+    glm::vec3 moonCubeColor(1.8f, 2.1f, 3.0f);
 
     // --- Orbit params ---
     float sunOrbitRadius  = 80.0f;
@@ -357,7 +457,8 @@ int main() {
         }
         glEnable(GL_CULL_FACE);
 
-        // --- 3. Scene pass ---
+        // --- 3. Scene pass → HDR FBO ---
+        glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO);
         glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
 
         // Day/night sky color
@@ -370,8 +471,11 @@ int main() {
         glm::vec3 skyColor = glm::mix(nightSky, daySky, dayBlend) + sunsetSky * sunsetBlend;
         glm::vec3 skyAmbient = skyColor * 0.15f;
 
-        glClearColor(skyColor.r, skyColor.g, skyColor.b, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        float skyClear[] = {skyColor.r, skyColor.g, skyColor.b, 1.0f};
+        float black[] = {0.0f, 0.0f, 0.0f, 1.0f};
+        glClearBufferfv(GL_COLOR, 0, skyClear);
+        glClearBufferfv(GL_COLOR, 1, black);
         glCullFace(GL_BACK);
 
         shader.use();
@@ -413,21 +517,53 @@ int main() {
 
         glBindVertexArray(cubeVAO);
 
-        // Sun cube
+        // Sun cube — scale with orbit radius
+        float sunCubeScale = sunOrbitRadius * 0.05f;
         glm::mat4 model = glm::mat4(1.0f);
         model = glm::translate(model, sunPos);
-        model = glm::scale(model, glm::vec3(0.4f));
+        model = glm::scale(model, glm::vec3(sunCubeScale));
         shaderLightCube.setMat4("model", model);
         shaderLightCube.setVec3("lightColor", sunCubeColor);
         glDrawArrays(GL_TRIANGLES, 0, 36);
 
-        // Moon cube
+        // Moon cube — scale with orbit radius
+        float moonCubeScale = moonOrbitRadius * 0.05f;
         model = glm::mat4(1.0f);
         model = glm::translate(model, moonPos);
-        model = glm::scale(model, glm::vec3(0.2f));
+        model = glm::scale(model, glm::vec3(moonCubeScale));
         shaderLightCube.setMat4("model", model);
         shaderLightCube.setVec3("lightColor", moonCubeColor);
         glDrawArrays(GL_TRIANGLES, 0, 36);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        // --- 4. Blur pass: ping-pong Gaussian blur on bright pixels ---
+        bool horizontal = true, first_iteration = true;
+        unsigned int amount = 10;
+        shaderBlur.use();
+        glActiveTexture(GL_TEXTURE0);
+        for (unsigned int i = 0; i < amount; ++i) {
+            glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[horizontal]);
+            shaderBlur.setBool("horizontal", horizontal);
+            glBindTexture(GL_TEXTURE_2D, first_iteration ? colorBuffers[1] : pingpongBuffers[!horizontal]);
+            renderQuad();
+            horizontal = !horizontal;
+            if (first_iteration) {
+                first_iteration = false;
+            }
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        // --- 5. Final composition: ACES Filmic + bloom ---
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        shaderFinal.use();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, colorBuffers[0]);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, pingpongBuffers[!horizontal]);
+        shaderFinal.setBool("bloom", bloom);
+        shaderFinal.setFloat("exposure", exposure);
+        renderQuad();
 
         glfwSwapBuffers(window);
         glfwPollEvents();
@@ -444,6 +580,13 @@ int main() {
     glDeleteFramebuffers(1, &fboMoon);
     glDeleteTextures(1, &depthMapSun);
     glDeleteTextures(1, &depthMapMoon);
+    glDeleteFramebuffers(1, &hdrFBO);
+    glDeleteTextures(2, colorBuffers);
+    glDeleteRenderbuffers(1, &rboDepth);
+    glDeleteFramebuffers(2, pingpongFBO);
+    glDeleteTextures(2, pingpongBuffers);
+    glDeleteVertexArrays(1, &quadVAO);
+    glDeleteBuffers(1, &quadVBO);
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;
@@ -494,12 +637,31 @@ void processInput(GLFWwindow* window) {
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) { camera.processKeyboard(BACKWARD, deltaTime); }
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) { camera.processKeyboard(LEFT,     deltaTime); }
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) { camera.processKeyboard(RIGHT,    deltaTime); }
+
+    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS && !bloomKeyPressed) {
+        bloom = !bloom;
+        bloomKeyPressed = true;
+    }
+    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_RELEASE) {
+        bloomKeyPressed = false;
+    }
+
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
+        exposure -= 0.5f * deltaTime;
+        if (exposure < 0.0f) { exposure = 0.0f; }
+    }
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
+        exposure += 0.5f * deltaTime;
+    }
 }
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
     SCR_WIDTH = width;
     SCR_HEIGHT = height;
     glViewport(0, 0, width, height);
+    if (width > 0 && height > 0) {
+        createBloomFramebuffers();
+    }
 }
 
 void mouse_callback(GLFWwindow* window, double xposIn, double yposIn) {
