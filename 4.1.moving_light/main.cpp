@@ -277,8 +277,10 @@ int main() {
     glm::vec3 moonCubeColor(0.6f, 0.7f, 1.0f);
 
     // --- Orbit params ---
-    float orbitRadius = 8.0f;
-    float orbitSpeed  = 5.0f;
+    float sunOrbitRadius  = 80.0f;
+    float sunOrbitSpeed   = 0.1f;
+    float moonOrbitRadius = 20.0f;
+    float moonOrbitSpeed  = 0.03f;
 
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = static_cast<float>(glfwGetTime());
@@ -287,34 +289,45 @@ int main() {
 
         processInput(window);
 
-        // --- Compute light positions ---
-        float angle = currentFrame * orbitSpeed;
-        float orbitsCompleted = angle / (2.0f * glm::pi<float>());
-        // Tilt oscillates: +5 deg per orbit, ping-pong between 0 and 45
-        float tiltNorm = std::fmod(orbitsCompleted / 9.0f, 2.0f);
-        float tiltDeg = (tiltNorm <= 1.0f ? tiltNorm : 2.0f - tiltNorm) * 45.0f;
-        glm::mat4 tiltMatrix = glm::rotate(glm::mat4(1.0f), glm::radians(tiltDeg), glm::vec3(1.0f, 0.0f, 0.0f));
+        // --- Sun orbit ---
+        float sunAngle = currentFrame * sunOrbitSpeed;
+        float sunOrbits = sunAngle / (2.0f * glm::pi<float>());
+        float sunTiltNorm = std::fmod(sunOrbits / 9.0f, 2.0f);
+        float sunTiltDeg = (sunTiltNorm <= 1.0f ? sunTiltNorm : 2.0f - sunTiltNorm) * 45.0f;
+        glm::mat4 sunTilt = glm::rotate(glm::mat4(1.0f), glm::radians(sunTiltDeg), glm::vec3(1.0f, 0.0f, 0.0f));
 
-        glm::vec3 baseSun(orbitRadius * std::cos(angle), orbitRadius * std::sin(angle), 0.0f);
-        glm::vec3 sunPos  = glm::vec3(tiltMatrix * glm::vec4(baseSun, 1.0f));
-        glm::vec3 moonPos = -sunPos;
+        glm::vec3 baseSun(sunOrbitRadius * std::cos(sunAngle), sunOrbitRadius * std::sin(sunAngle), 0.0f);
+        glm::vec3 sunPos = glm::vec3(sunTilt * glm::vec4(baseSun, 1.0f));
+
+        // --- Moon orbit (independent) ---
+        float moonAngle = currentFrame * moonOrbitSpeed;
+        float moonOrbits = moonAngle / (2.0f * glm::pi<float>());
+        float moonTiltNorm = std::fmod(moonOrbits / 7.0f, 2.0f);
+        float moonTiltDeg = (moonTiltNorm <= 1.0f ? moonTiltNorm : 2.0f - moonTiltNorm) * 30.0f;
+        glm::mat4 moonTilt = glm::rotate(glm::mat4(1.0f), glm::radians(moonTiltDeg), glm::vec3(0.0f, 0.0f, 1.0f));
+
+        glm::vec3 baseMoon(moonOrbitRadius * std::cos(moonAngle), moonOrbitRadius * std::sin(moonAngle), 0.0f);
+        glm::vec3 moonPos = glm::vec3(moonTilt * glm::vec4(baseMoon, 1.0f));
 
         // --- Horizon factor: fade out when light goes below ground ---
         float sunFactor  = glm::clamp(sunPos.y / 2.0f, 0.0f, 1.0f);
         float moonFactor = glm::clamp(moonPos.y / 2.0f, 0.0f, 1.0f);
 
-        // --- Elevation: sin(angle above horizon), 0..1 ---
-        float sunElevation  = glm::clamp(sunPos.y / orbitRadius, 0.0f, 1.0f);
-        float moonElevation = glm::clamp(moonPos.y / orbitRadius, 0.0f, 1.0f);
+        // --- Elevation: 0..1 ---
+        float sunElevation  = glm::clamp(sunPos.y / sunOrbitRadius, 0.0f, 1.0f);
+        float moonElevation = glm::clamp(moonPos.y / moonOrbitRadius, 0.0f, 1.0f);
 
         // --- Light space matrices ---
-        glm::mat4 lightProjection = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 1.0f, 20.0f);
+        float sunDist  = glm::length(sunPos);
+        float moonDist = glm::length(moonPos);
+        glm::mat4 sunProjection  = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 1.0f, sunDist + 10.0f);
+        glm::mat4 moonProjection = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 1.0f, moonDist + 10.0f);
 
         glm::mat4 lightViewSun  = glm::lookAt(sunPos,  glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
         glm::mat4 lightViewMoon = glm::lookAt(moonPos, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 
-        glm::mat4 lightSpaceMatrixSun  = lightProjection * lightViewSun;
-        glm::mat4 lightSpaceMatrixMoon = lightProjection * lightViewMoon;
+        glm::mat4 lightSpaceMatrixSun  = sunProjection  * lightViewSun;
+        glm::mat4 lightSpaceMatrixMoon = moonProjection * lightViewMoon;
 
         // --- 1. Shadow pass: Sun ---
         glDisable(GL_CULL_FACE);
@@ -346,7 +359,18 @@ int main() {
 
         // --- 3. Scene pass ---
         glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
-        glClearColor(0.05f, 0.05f, 0.08f, 1.0f);
+
+        // Day/night sky color
+        float sunH = glm::clamp(sunPos.y / sunOrbitRadius, -1.0f, 1.0f);
+        glm::vec3 nightSky(0.02f, 0.02f, 0.05f);
+        glm::vec3 daySky(0.4f, 0.55f, 0.8f);
+        glm::vec3 sunsetSky(0.6f, 0.25f, 0.1f);
+        float dayBlend = glm::clamp(sunH * 3.0f, 0.0f, 1.0f);
+        float sunsetBlend = glm::clamp(1.0f - std::abs(sunH) * 5.0f, 0.0f, 1.0f);
+        glm::vec3 skyColor = glm::mix(nightSky, daySky, dayBlend) + sunsetSky * sunsetBlend;
+        glm::vec3 skyAmbient = skyColor * 0.15f;
+
+        glClearColor(skyColor.r, skyColor.g, skyColor.b, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glCullFace(GL_BACK);
 
@@ -371,6 +395,7 @@ int main() {
         shader.setFloat("lightIntensity2", moonFactor);
         shader.setFloat("lightElevation1", sunElevation);
         shader.setFloat("lightElevation2", moonElevation);
+        shader.setVec3("skyAmbient", skyAmbient);
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, floorTexture);

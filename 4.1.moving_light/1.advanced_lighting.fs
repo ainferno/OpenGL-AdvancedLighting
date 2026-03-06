@@ -22,6 +22,7 @@ uniform float ambientStrength2;
 uniform float lightIntensity1;
 uniform float lightIntensity2;
 uniform vec3 viewPos;
+uniform vec3 skyAmbient;
 
 float ShadowCalculation(vec4 fragPosLightSpace, sampler2D shadowMap) {
     vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w * 0.5 + 0.5;
@@ -71,7 +72,7 @@ void main() {
     vec3 normal = normalize(fs_in.Normal);
     vec3 viewDir = normalize(viewPos - fs_in.FragPos);
 
-    vec3 result = vec3(0.0);
+    vec3 result = skyAmbient * color;
     result += calcLight(lightPos1, lightColor1, ambientStrength1, lightIntensity1,
                         fs_in.FragPosLightSpace1, shadowMap1, normal, viewDir, color);
     result += calcLight(lightPos2, lightColor2, ambientStrength2, lightIntensity2,
